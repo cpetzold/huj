@@ -1,7 +1,7 @@
 (ns huj.core
   (:import (java.net MulticastSocket DatagramPacket InetAddress)
            (java.io ByteArrayInputStream))
-  (:use [clojure.data.zip.xml :only (attr text xml->)])
+  (:use [clojure.data.zip.xml :only (text xml->)])
   (:require [huj.utils :as utils]
             [clojure.string :as string]
             [clojure.xml :as xml]
@@ -11,6 +11,7 @@
 (def +host+ "239.255.255.250")
 (def +port+ 1900)
 (def +broadcast+ "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: ssdp:discover\r\nMX: 10\r\nST: ssdp:all\r\n")
+(def +devicetype+ "huj")
 
 (defn multicast-socket [host port]
   (let [sock (MulticastSocket. port)
@@ -50,16 +51,46 @@
     (when-let [location (:LOCATION data)]
       (let [xml-str (:body (client/get location))
             xml-stream (ByteArrayInputStream. (.getBytes xml-str "UTF-8"))] 
-      (zip/xml-zip (xml/parse xml-stream))))))
+        (when-let [hub (zip/xml-zip (xml/parse xml-stream))]
+          {:url (str (first (xml-> hub :URLBase text)) "api")
+           :name (first (xml-> hub :device :friendlyName text))
+           :udn (first (xml-> hub :device :UDN text))})))))
 
+(defn auth [hub username]
+  (let [res (client/post (:url hub)
+                         {:form-params {:username (utils/md5 username)
+                                        :devicetype +devicetype+}
+                          :content-type :json
+                          :as :json})]
+    (if-let [username (get-in res [:body 0 :success :username])]
+      (assoc hub :username username)
+      (print res))))
 
 (defn connect [username]
   (let [sock (multicast-socket +host+ +port+)]
     (send-data sock +host+ +port+ +broadcast+)
-    (loop [data (receive-data sock)]
-      (or (hub-data data) (recur (receive-data sock))))))
+    (let [hub (loop [data (receive-data sock)]
+                (or (hub-data data) (recur (receive-data sock))))]
+      (close-socket sock)
+      (auth hub username))))
+
+(defn request [hub method path & [params opts]]
+  (let [params (if (= method :get)
+                 {:query-params params}
+                 {:form-params params})]
+    (:body (client/request (merge {:method method
+                            :url (str (:url hub) (:username hub) "/" path)
+                            :content-type :json
+                            :as :json}
+                           opts params)))))
+
+(defn get-config [hub]
+  (request hub :get "config"))
+
+(defn bulb-state [hub n state]
+  (request hub :put (str "lights/" n "/state") state))
     
 
 
 
-         
+        
