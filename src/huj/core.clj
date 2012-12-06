@@ -6,7 +6,8 @@
             [clojure.string :as string]
             [clojure.xml :as xml]
             [clojure.zip :as zip]
-            [clj-http.client :as client]))
+            [clj-http.client :as client]
+            [tinter.core :as tinter]))
 
 (def +host+ "239.255.255.250")
 (def +port+ 1900)
@@ -77,20 +78,57 @@
 (defn request [hub method path & [params opts]]
   (let [params (if (= method :get)
                  {:query-params params}
-                 {:form-params params})]
-    (:body (client/request (merge {:method method
-                            :url (str (:url hub) (:username hub) "/" path)
-                            :content-type :json
-                            :as :json}
-                           opts params)))))
+                 {:form-params params})
+        url (str (:url hub) (:username hub) "/" path)
+        req (merge {:method method
+                    :url url
+                    :content-type :json
+                    :as :json}
+                   opts params)]
+    (Thread/sleep (/ 1000 30))
+    (:body (client/request req))))
+
+(defn bulb-request [hub n method path & [params opts]]
+  (request hub method (str "lights/" n "/" path) params opts))
 
 (defn get-config [hub]
   (request hub :get "config"))
 
-(defn bulb-state [hub n state]
-  (request hub :put (str "lights/" n "/state") state))
+(defn replace-vals [m rmap]
+  (into {} (for [[k v] m]
+             [k
+              (if (rmap k)
+                ((rmap k) v)
+                v)])))
+
+(defn normalize-hue [h]
+  (int (* (/ h 360.0) 65535)))
     
+(defn normalize-state [state]
+  (replace-vals state
+                {:hue normalize-hue}))
 
+(defn get-bulb-state [hub n]
+  (bulb-request hub n :get ""))
 
+(defn bulb-state [hub n state]
+  (bulb-request hub n :put "state" (normalize-state state)))
 
-        
+(defn bulb-rgb [hub n rgb]
+  (bulb-state hub n {:hue (tinter/hue rgb)}))
+
+(defn hue-rainbow [hub n steps speed & [state]]
+  (let [step-size (/ 360.0 steps)]
+    (doseq [hue (range 0 360.0 step-size)]
+      (bulb-state hub n (merge state {:hue hue}))
+      (Thread/sleep speed))))
+
+(defn strobe [hub n speed & [init-state]]
+  (let [init-state (merge init-state {:transitiontime 0 :on true})
+        !on (atom true)]
+    (bulb-state hub n init-state)
+    (while true
+      (bulb-state hub n {:bri (if (swap! !on not) 254 0) :transitiontime 0})
+      (Thread/sleep speed))))
+    
+    
